@@ -1,0 +1,148 @@
+{% extends 'base.html' %}
+{% block title %}{{ lesson.title }}{% endblock %}
+{% load static %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="card">
+        <div class="card-header bg-primary text-white">
+            <h4>{{ lesson.title }}</h4>
+        </div>
+        <div class="card-body">
+            <p>{{ lesson.description }}</p>
+            <h5 class="mt-3">Sign: <span class="display-4">{{ lesson.word.letter }}</span></h5>
+
+            <hr>
+            <h5 class="mb-3">Try Signing the Letter:</h5>
+            <div class="row align-items-center mb-4">
+                <!-- Left: Static Image -->
+                <div class="col-md-6 text-center">
+                    {% if lesson_media_url %}
+                        <img src="{% static 'signs/'|add:lesson.word.letter|lower|add:'.png' %}" alt="Sign image" class="img-fluid rounded border">
+                        <p class="mt-2 text-muted">Example: Sign for "{{ lesson.word.letter }}"</p>
+                    {% endif %}
+                </div>
+
+                <!-- Right: Live Camera -->
+                <div class="col-md-6 text-center">
+                    <video id="video" width="480" height="360" autoplay class="border rounded"></video>
+                    <div id="controls" class="my-2">
+                        <button id="start-btn" class="btn btn-primary me-2">Start Camera</button>
+                        <button id="stop-btn" class="btn btn-secondary" disabled>Stop</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="alert alert-info" id="camera-status">Waiting for input...</div>
+            <canvas id="canvas" width="480" height="360" style="display: none;"></canvas>
+
+            <form id="complete-form" method="POST" action="{% url 'complete_lesson' lesson.id %}">
+                {% csrf_token %}
+                <button id="complete-btn" class="btn btn-success mt-3" style="display:none;">Mark Lesson as Complete ✅</button>
+            </form>
+
+        </div>
+    </div>
+</div>
+
+<script>
+    const correctLetter = "{{ lesson.word.letter|escapejs }}";
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const statusEl = document.getElementById('camera-status');
+    const completeBtn = document.getElementById('complete-btn');
+
+    let streaming = false;
+    let intervalID = null;
+
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let cookie of cookies) {
+                cookie = cookie.trim();
+                if (cookie.startsWith(name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    const csrftoken = getCookie('csrftoken');
+
+    function startCamera() {
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+                video.play();
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                streaming = true;
+                statusEl.textContent = "Camera started. Show the sign for: " + correctLetter;
+                intervalID = setInterval(captureAndCheck, 1500);
+            })
+            .catch(err => {
+                alert("Could not access camera.");
+                console.error(err);
+            });
+    }
+
+    function stopCamera() {
+        const stream = video.srcObject;
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+        }
+        streaming = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        clearInterval(intervalID);
+        statusEl.textContent = "Camera stopped.";
+    }
+
+    function captureAndCheck() {
+        if (!streaming) return;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob(blob => {
+            const formData = new FormData();
+            formData.append('image', blob, 'frame.png');
+
+            fetch('/process-image/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrftoken },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                const predicted = data.predicted_characters?.[0];  // assuming list
+                if (!predicted) return;
+
+                if (predicted.toUpperCase() === correctLetter.toUpperCase()) {
+                    statusEl.className = 'alert alert-success';
+                    statusEl.textContent = `✅ Correct! You signed "${predicted}"`;
+
+                    completeBtn.style.display = 'inline-block';
+                    stopCamera();
+                } else {
+                    statusEl.className = 'alert alert-warning';
+                    statusEl.textContent = `❌ Detected "${predicted}", try again for "${correctLetter}"`;
+                }
+            })
+            .catch(err => {
+                console.error("Error sending image:", err);
+            });
+        }, 'image/png');
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', stopCamera);
+</script>
+{% endblock %}
